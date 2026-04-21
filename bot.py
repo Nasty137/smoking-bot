@@ -82,7 +82,17 @@ async def save_user_data(user_id: int, data: Dict):
         ))
         await db.commit()
 
-# --- Хендлеры команд ---
+# --- Функция для корректировки времени сна ---
+def adjust_bed_time(bed_time: datetime, now: datetime, first_time: datetime) -> datetime:
+    """Возвращает правильную дату для времени сна"""
+    if bed_time.time() < first_time.time():
+        bed_today = datetime.combine(now.date(), bed_time.time())
+        if now > bed_today:
+            return datetime.combine(now.date() + timedelta(days=1), bed_time.time())
+        return bed_today
+    return bed_time
+
+# --- Хендлеры ---
 async def start_command(message: Message, state: FSMContext):
     await message.answer(
         "Привет! Я бот, который поможет тебе контролировать курение. 🚭\n"
@@ -106,19 +116,13 @@ async def process_first_cigarette(message: Message, state: FSMContext):
 
 async def process_bed_time(message: Message, state: FSMContext):
     try:
-        bed_time_str = message.text
-        bed_time = datetime.strptime(bed_time_str, "%H:%M").time()
+        bed_time = datetime.strptime(message.text, "%H:%M").time()
         now = datetime.now()
-        
         user_data = await state.get_data()
         first_time = user_data.get("first_cigarette_time")
         
-        if first_time:
-            first_time_of_day = first_time.time()
-            if bed_time < first_time_of_day:
-                bed_datetime = datetime.combine(now.date() + timedelta(days=1), bed_time)
-            else:
-                bed_datetime = datetime.combine(now.date(), bed_time)
+        if first_time and bed_time < first_time.time():
+            bed_datetime = datetime.combine(now.date() + timedelta(days=1), bed_time)
         else:
             bed_datetime = datetime.combine(now.date(), bed_time)
         
@@ -146,7 +150,23 @@ async def process_planned_count(message: Message, state: FSMContext):
             "last_update_time": first_time
         }
         await save_user_data(message.from_user.id, data_to_save)
-        await send_schedule(message, data_to_save, first_time)
+        
+        # Отправляем расписание
+        remaining = planned_count - 1
+        if remaining > 0:
+            interval = (bed_time - first_time) / remaining
+            next_time = first_time + interval
+            response = (
+                f"Твой план на сегодня:\n"
+                f"🎯 Всего запланировано: {planned_count} сигарет\n"
+                f"✅ Выкурено: 1\n"
+                f"🚬 Осталось: {remaining}\n\n"
+                f"Следующая сигарета: {next_time.strftime('%H:%M')}"
+            )
+        else:
+            response = "Поздравляю! Ты выполнила дневной план! 🎉"
+        
+        await message.answer(response)
         await state.clear()
         await message.answer(
             "Настройка завершена! Первая сигарета уже учтена ✅\n"
@@ -155,51 +175,6 @@ async def process_planned_count(message: Message, state: FSMContext):
         )
     except ValueError:
         await message.answer("Пожалуйста, введи целое положительное число.")
-
-def adjust_bed_time_for_comparison(bed_time: datetime, now: datetime, first_time: datetime) -> datetime:
-    """Корректирует bed_time для корректного сравнения с now"""
-    if bed_time.time() < first_time.time():
-        bed_time_today = datetime.combine(now.date(), bed_time.time())
-        if now > bed_time_today:
-            return datetime.combine(now.date() + timedelta(days=1), bed_time.time())
-        else:
-            return bed_time_today
-    return bed_time
-
-async def send_schedule(message: Message, user_data: Dict, current_time: datetime):
-    bed_time = user_data["bed_time"]
-    planned_count = user_data["planned_count"]
-    smoked_count = user_data["smoked_count"]
-    
-    remaining_count = planned_count - smoked_count
-    if remaining_count <= 0:
-        await message.answer("Поздравляю! Ты выполнила дневной план! 🎉")
-        return
-    
-    # Для расчётов используем исходное bed_time
-    if smoked_count == 0:
-        time_diff = bed_time - current_time
-    else:
-        last_update = user_data["last_update_time"]
-        if last_update:
-            time_diff = bed_time - last_update
-        else:
-            time_diff = bed_time - current_time
-    
-    if time_diff.total_seconds() <= 0:
-        await message.answer("Время сна уже прошло. Пожалуйста, настрой план заново командой /start.")
-        return
-    
-    interval = time_diff / remaining_count
-    next_time = (current_time if smoked_count > 0 else current_time) + interval
-    
-    schedule_text = f"Твой план на сегодня:\n"
-    schedule_text += f"🎯 Всего запланировано: {planned_count} сигарет\n"
-    schedule_text += f"✅ Выкурено: {smoked_count}\n"
-    schedule_text += f"🚬 Осталось: {remaining_count}\n\n"
-    schedule_text += f"Следующая сигарета: {next_time.strftime('%H:%M')}\n"
-    
-    await message.answer(schedule_text)
 
 async def smoke_command(message: Message):
     user_id = message.from_user.id
@@ -213,8 +188,7 @@ async def smoke_command(message: Message):
     bed_time = user_data["bed_time"]
     first_time = user_data["first_cigarette_time"]
     
-    # Корректируем bed_time для сравнения
-    adjusted_bed = adjust_bed_time_for_comparison(bed_time, now, first_time)
+    adjusted_bed = adjust_bed_time(bed_time, now, first_time)
     
     if now > adjusted_bed:
         await message.answer("Время сна уже прошло. Пожалуйста, настрой план на завтра командой /start.")
@@ -225,8 +199,20 @@ async def smoke_command(message: Message):
     user_data["last_update_time"] = now
     await save_user_data(user_id, user_data)
     
-    await message.answer(f"🚬 Выкуренная сигарета отмечена! Выкурила за сегодня: {new_smoked_count} из {user_data['planned_count']}")
-    await send_schedule(message, user_data, now)
+    remaining = user_data["planned_count"] - new_smoked_count
+    if remaining > 0:
+        interval = (adjusted_bed - now) / remaining
+        next_time = now + interval
+        response = (
+            f"🚬 Выкуренная сигарета отмечена!\n"
+            f"✅ Выкурено: {new_smoked_count} из {user_data['planned_count']}\n"
+            f"🚬 Осталось: {remaining}\n\n"
+            f"Следующая сигарета: {next_time.strftime('%H:%M')}"
+        )
+    else:
+        response = f"🚬 Выкуренная сигарета отмечена! Поздравляю! Ты выполнила дневной план! 🎉"
+    
+    await message.answer(response)
 
 async def stats_command(message: Message):
     user_data = await get_user_data(message.from_user.id)
@@ -234,13 +220,14 @@ async def stats_command(message: Message):
         await message.answer("Нет данных. Пожалуйста, настрой бота командой /start.")
         return
     
-    stats_text = f"📊 Твоя статистика за сегодня:\n"
-    stats_text += f"🎯 План: {user_data['planned_count']} сигарет\n"
-    stats_text += f"✅ Выкурено: {user_data['smoked_count']}\n"
-    stats_text += f"🚬 Осталось: {user_data['planned_count'] - user_data['smoked_count']}\n"
-    await message.answer(stats_text)
+    await message.answer(
+        f"📊 Твоя статистика за сегодня:\n"
+        f"🎯 План: {user_data['planned_count']} сигарет\n"
+        f"✅ Выкурено: {user_data['smoked_count']}\n"
+        f"🚬 Осталось: {user_data['planned_count'] - user_data['smoked_count']}"
+    )
 
-# --- Запуск бота ---
+# --- Запуск ---
 async def main():
     await init_db()
     bot = Bot(token=BOT_TOKEN)
