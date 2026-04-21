@@ -110,21 +110,16 @@ async def process_bed_time(message: Message, state: FSMContext):
         bed_time = datetime.strptime(bed_time_str, "%H:%M").time()
         now = datetime.now()
         
-        # Получаем время первой сигареты из состояния
         user_data = await state.get_data()
         first_time = user_data.get("first_cigarette_time")
         
         if first_time:
             first_time_of_day = first_time.time()
-            # Если время сна меньше времени первой сигареты - значит, это следующие сутки
             if bed_time < first_time_of_day:
-                # Сон на следующий день
                 bed_datetime = datetime.combine(now.date() + timedelta(days=1), bed_time)
             else:
-                # Сон в тот же день
                 bed_datetime = datetime.combine(now.date(), bed_time)
         else:
-            # Если вдруг нет первой сигареты, просто считаем, что сон сегодня
             bed_datetime = datetime.combine(now.date(), bed_time)
         
         await state.update_data(bed_time=bed_datetime)
@@ -138,24 +133,25 @@ async def process_planned_count(message: Message, state: FSMContext):
         planned_count = int(message.text)
         if planned_count <= 0:
             raise ValueError
-        user_data = await state.update_data(planned_count=planned_count, smoked_count=0, last_update_time=None)
         
+        user_data = await state.get_data()
         first_time = user_data["first_cigarette_time"]
         bed_time = user_data["bed_time"]
         
+        # ПЕРВАЯ СИГАРЕТА УЖЕ ВЫКУРЕНА
         data_to_save = {
             "first_cigarette_time": first_time,
             "bed_time": bed_time,
             "planned_count": planned_count,
-            "smoked_count": 0,
-            "last_update_time": None
+            "smoked_count": 1,  # <-- ИСПРАВЛЕНО
+            "last_update_time": first_time
         }
         await save_user_data(message.from_user.id, data_to_save)
         await send_schedule(message, data_to_save, first_time)
         await state.clear()
         await message.answer(
-            "Настройка завершена! Теперь я буду напоминать тебе о перерывах.\n"
-            "Не забывай отмечать каждую выкуренную сигарету кнопкой ниже 👇",
+            "Настройка завершена! Первая сигарета уже учтена ✅\n"
+            "Не забывай отмечать каждую следующую сигарету кнопкой ниже 👇",
             reply_markup=get_main_keyboard()
         )
     except ValueError:
