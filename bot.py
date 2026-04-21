@@ -138,12 +138,11 @@ async def process_planned_count(message: Message, state: FSMContext):
         first_time = user_data["first_cigarette_time"]
         bed_time = user_data["bed_time"]
         
-        # ПЕРВАЯ СИГАРЕТА УЖЕ ВЫКУРЕНА
         data_to_save = {
             "first_cigarette_time": first_time,
             "bed_time": bed_time,
             "planned_count": planned_count,
-            "smoked_count": 1,  # <-- ИСПРАВЛЕНО
+            "smoked_count": 1,
             "last_update_time": first_time
         }
         await save_user_data(message.from_user.id, data_to_save)
@@ -157,6 +156,16 @@ async def process_planned_count(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("Пожалуйста, введи целое положительное число.")
 
+def adjust_bed_time_for_comparison(bed_time: datetime, now: datetime, first_time: datetime) -> datetime:
+    """Корректирует bed_time для корректного сравнения с now"""
+    if bed_time.time() < first_time.time():
+        bed_time_today = datetime.combine(now.date(), bed_time.time())
+        if now > bed_time_today:
+            return datetime.combine(now.date() + timedelta(days=1), bed_time.time())
+        else:
+            return bed_time_today
+    return bed_time
+
 async def send_schedule(message: Message, user_data: Dict, current_time: datetime):
     bed_time = user_data["bed_time"]
     planned_count = user_data["planned_count"]
@@ -167,6 +176,7 @@ async def send_schedule(message: Message, user_data: Dict, current_time: datetim
         await message.answer("Поздравляю! Ты выполнила дневной план! 🎉")
         return
     
+    # Для расчётов используем исходное bed_time
     if smoked_count == 0:
         time_diff = bed_time - current_time
     else:
@@ -201,8 +211,12 @@ async def smoke_command(message: Message):
     
     now = datetime.now()
     bed_time = user_data["bed_time"]
+    first_time = user_data["first_cigarette_time"]
     
-    if now > bed_time:
+    # Корректируем bed_time для сравнения
+    adjusted_bed = adjust_bed_time_for_comparison(bed_time, now, first_time)
+    
+    if now > adjusted_bed:
         await message.answer("Время сна уже прошло. Пожалуйста, настрой план на завтра командой /start.")
         return
     
