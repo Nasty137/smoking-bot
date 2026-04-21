@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, F
@@ -106,9 +106,27 @@ async def process_first_cigarette(message: Message, state: FSMContext):
 
 async def process_bed_time(message: Message, state: FSMContext):
     try:
-        bed_time = datetime.strptime(message.text, "%H:%M").time()
+        bed_time_str = message.text
+        bed_time = datetime.strptime(bed_time_str, "%H:%M").time()
         now = datetime.now()
-        bed_datetime = datetime.combine(now.date(), bed_time)
+        
+        # Получаем время первой сигареты из состояния
+        user_data = await state.get_data()
+        first_time = user_data.get("first_cigarette_time")
+        
+        if first_time:
+            first_time_of_day = first_time.time()
+            # Если время сна меньше времени первой сигареты - значит, это следующие сутки
+            if bed_time < first_time_of_day:
+                # Сон на следующий день
+                bed_datetime = datetime.combine(now.date() + timedelta(days=1), bed_time)
+            else:
+                # Сон в тот же день
+                bed_datetime = datetime.combine(now.date(), bed_time)
+        else:
+            # Если вдруг нет первой сигареты, просто считаем, что сон сегодня
+            bed_datetime = datetime.combine(now.date(), bed_time)
+        
         await state.update_data(bed_time=bed_datetime)
         await message.answer("Сколько сигарет ты планируешь выкурить за сегодня? (Введи число)")
         await state.set_state(SmokingStates.waiting_for_planned_count)
