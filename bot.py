@@ -81,10 +81,9 @@ async def save_user_data(user_id: int, data: Dict):
         ))
         await db.commit()
 
-# --- Вспомогательная функция для приведения bed_time к правильной дате ---
-def fix_bed_time(bed_time: datetime, first_time: datetime, now: datetime) -> datetime:
-    """Возвращает bed_time с правильной датой (сегодня или завтра)"""
-    # Если время сна меньше времени первой сигареты, то сон на следующий день
+# --- Вспомогательная функция для корректировки времени сна ---
+def adjust_bed_time(bed_time: datetime, first_time: datetime, now: datetime) -> datetime:
+    """Возвращает bed_time с правильной датой для сравнения с now"""
     if bed_time.time() < first_time.time():
         # Пробуем сегодняшнюю дату
         bed_today = datetime.combine(now.date(), bed_time.time())
@@ -132,7 +131,8 @@ async def process_bed_time(message: Message, state: FSMContext):
             return
         
         now = datetime.now()
-        # Создаём bed_time с правильной датой
+        
+        # Если время сна меньше времени первой сигареты — значит, сон на следующий день
         if bed_time_tm < first_datetime.time():
             bed_datetime = datetime.combine(now.date() + timedelta(days=1), bed_time_tm)
         else:
@@ -199,7 +199,7 @@ async def smoke_command(message: Message):
     bed_time_raw = data["bed_time"]
     
     # Корректируем bed_time для сравнения с текущим моментом
-    bed_time = fix_bed_time(bed_time_raw, first_time, now)
+    bed_time = adjust_bed_time(bed_time_raw, first_time, now)
     
     # Проверяем, не наступило ли время сна
     if now > bed_time:
@@ -218,7 +218,6 @@ async def smoke_command(message: Message):
     remaining = data["planned_count"] - new_smoked
     
     if remaining > 0:
-        # Пересчитываем интервал от текущего момента до сна
         interval = (bed_time - now) / remaining
         next_time = now + interval
         await message.answer(
@@ -226,10 +225,17 @@ async def smoke_command(message: Message):
             f"🚬 Осталось: {remaining}\n\n"
             f"⏰ Следующая сигарета: {next_time.strftime('%H:%M')}"
         )
-    else:
+    elif remaining == 0:
         await message.answer(
             f"🎉 Поздравляю! Ты выполнила дневной план!\n"
             f"Выкурено: {new_smoked} из {data['planned_count']}"
+        )
+    else:  # remaining < 0 — превышение плана
+        over = abs(remaining)
+        await message.answer(
+            f"⚠️ Внимание! Ты превысила план на {over} сигарет(ы)!\n"
+            f"Запланировано: {data['planned_count']}, выкурено: {new_smoked}\n"
+            f"Постарайся завтра не превышать норму 🙏"
         )
 
 async def stats_command(message: Message):
