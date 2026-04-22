@@ -82,17 +82,17 @@ async def save_user_data(user_id: int, data: Dict):
         await db.commit()
 
 # --- Вспомогательная функция для корректировки времени сна ---
-def adjust_bed_time(bed_time: datetime, first_time: datetime, now: datetime) -> datetime:
-    """Возвращает bed_time с правильной датой для сравнения с now"""
+def get_correct_bed_time(bed_time: datetime, first_time: datetime, now: datetime) -> datetime:
+    """Возвращает bed_time с правильной датой для сравнения и расчётов"""
+    # Если время сна меньше времени первой сигареты — это сон на следующий день
     if bed_time.time() < first_time.time():
-        # Пробуем сегодняшнюю дату
-        bed_today = datetime.combine(now.date(), bed_time.time())
-        # Если сегодняшнее время сна уже прошло, берём завтра
-        if now > bed_today:
+        # Предполагаем, что сон сегодня
+        bed_candidate = datetime.combine(now.date(), bed_time.time())
+        # Если сегодняшний сон уже прошёл — берём завтра
+        if now > bed_candidate:
             return datetime.combine(now.date() + timedelta(days=1), bed_time.time())
-        return bed_today
+        return bed_candidate
     else:
-        # Сон в тот же день
         return datetime.combine(now.date(), bed_time.time())
 
 # --- Хендлеры ---
@@ -154,7 +154,6 @@ async def process_planned_count(message: Message, state: FSMContext):
         first_time = user_data["first_cigarette_time"]
         bed_time = user_data["bed_time"]
         
-        # Сохраняем данные, отмечая первую сигарету как выкуренную
         await save_user_data(message.from_user.id, {
             "first_cigarette_time": first_time,
             "bed_time": bed_time,
@@ -163,7 +162,6 @@ async def process_planned_count(message: Message, state: FSMContext):
             "last_update_time": first_time
         })
         
-        # Рассчитываем следующую сигарету
         remaining = planned - 1
         if remaining > 0:
             interval = (bed_time - first_time) / remaining
@@ -198,8 +196,8 @@ async def smoke_command(message: Message):
     first_time = data["first_cigarette_time"]
     bed_time_raw = data["bed_time"]
     
-    # Корректируем bed_time для сравнения с текущим моментом
-    bed_time = adjust_bed_time(bed_time_raw, first_time, now)
+    # Получаем bed_time с правильной датой
+    bed_time = get_correct_bed_time(bed_time_raw, first_time, now)
     
     # Проверяем, не наступило ли время сна
     if now > bed_time:
@@ -218,8 +216,15 @@ async def smoke_command(message: Message):
     remaining = data["planned_count"] - new_smoked
     
     if remaining > 0:
+        # Используем правильный bed_time для расчёта интервала
         interval = (bed_time - now) / remaining
         next_time = now + interval
+        
+        # Если следующее время оказалось меньше текущего (ошибка) — корректируем
+        if next_time <= now:
+            # Принудительно добавляем небольшой интервал (10 минут)
+            next_time = now + timedelta(minutes=10)
+        
         await message.answer(
             f"✅ Отмечено! Выкурено: {new_smoked} из {data['planned_count']}\n"
             f"🚬 Осталось: {remaining}\n\n"
@@ -230,7 +235,7 @@ async def smoke_command(message: Message):
             f"🎉 Поздравляю! Ты выполнила дневной план!\n"
             f"Выкурено: {new_smoked} из {data['planned_count']}"
         )
-    else:  # remaining < 0 — превышение плана
+    else:
         over = abs(remaining)
         await message.answer(
             f"⚠️ Внимание! Ты превысила план на {over} сигарет(ы)!\n"
