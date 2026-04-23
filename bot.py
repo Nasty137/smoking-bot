@@ -9,14 +9,27 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-import aiosqlite
 
 BOT_TOKEN = "8713595114:AAHX5n1B-HAZFwg3lCkf-aQQDsU0WLpUmq4"
-DB_NAME = "smoking_bot.db"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- Хранилище в памяти (вместо SQLite) ---
+user_data_store: Dict[int, Dict] = {}
+
+def get_user_data(user_id: int) -> Optional[Dict]:
+    return user_data_store.get(user_id)
+
+def save_user_data(user_id: int, data: Dict):
+    user_data_store[user_id] = data
+    logger.info(f"Сохранено для {user_id}: {data}")
+
+def reset_user(user_id: int):
+    if user_id in user_data_store:
+        del user_data_store[user_id]
+
+# --- Клавиатура ---
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -26,73 +39,21 @@ def get_main_keyboard():
         resize_keyboard=True
     )
 
+# --- Состояния ---
 class SmokingStates(StatesGroup):
     waiting_for_first_cigarette = State()
     waiting_for_bed_time = State()
     waiting_for_planned_count = State()
 
-async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS user_data (
-                user_id INTEGER PRIMARY KEY,
-                first_cigarette_time TEXT,
-                bed_time TEXT,
-                planned_count INTEGER,
-                smoked_count INTEGER,
-                last_update_time TEXT
-            )
-        """)
-        await db.commit()
-
-async def get_user_data(user_id: int) -> Optional[Dict]:
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute(
-            "SELECT first_cigarette_time, bed_time, planned_count, smoked_count, last_update_time FROM user_data WHERE user_id = ?",
-            (user_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                return {
-                    "first_cigarette_time": datetime.fromisoformat(row[0]),
-                    "bed_time": datetime.fromisoformat(row[1]),
-                    "planned_count": row[2],
-                    "smoked_count": row[3],
-                    "last_update_time": datetime.fromisoformat(row[4]) if row[4] else None
-                }
-            return None
-
-async def save_user_data(user_id: int, data: Dict):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            INSERT OR REPLACE INTO user_data (user_id, first_cigarette_time, bed_time, planned_count, smoked_count, last_update_time)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            user_id,
-            data["first_cigarette_time"].isoformat(),
-            data["bed_time"].isoformat(),
-            data["planned_count"],
-            data["smoked_count"],
-            data["last_update_time"].isoformat() if data["last_update_time"] else None
-        ))
-        await db.commit()
-
-async def reset_user(user_id: int):
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("DELETE FROM user_data WHERE user_id = ?", (user_id,))
-        await db.commit()
-
 # --- Команда /reset ---
 async def reset_command(message: Message, state: FSMContext):
-    await reset_user(message.from_user.id)
+    reset_user(message.from_user.id)
     await state.clear()
-    await message.answer(
-        "✅ Все твои данные удалены. Можешь начать заново командой /start"
-    )
+    await message.answer("✅ Все твои данные удалены. Можешь начать заново командой /start")
 
-# --- Основные хендлеры ---
+# --- Команда /start ---
 async def start_command(message: Message, state: FSMContext):
-    await reset_user(message.from_user.id)  # чистим старые данные
+    reset_user(message.from_user.id)
     await state.clear()
     await message.answer(
         "Привет! Я бот для контроля курения. 🚭\n\n"
@@ -123,7 +84,7 @@ async def process_bed_time(message: Message, state: FSMContext):
         user_data = await state.get_data()
         first_datetime = user_data.get("first_cigarette_time")
         if not first_datetime:
-            await message.answer("Сначала укажи время первой сигареты. Начни заново с /start")
+            await message.answer("Сначала укажи время первой сигареты. /start")
             return
         now = datetime.now()
         # Если время сна меньше времени первой сигареты — сон на следующий день
@@ -145,7 +106,8 @@ async def process_planned_count(message: Message, state: FSMContext):
         user_data = await state.get_data()
         first_time = user_data["first_cigarette_time"]
         bed_time = user_data["bed_time"]
-        await save_user_data(message.from_user.id, {
+        # Сохраняем в память
+        save_user_data(message.from_user.id, {
             "first_cigarette_time": first_time,
             "bed_time": bed_time,
             "planned_count": planned,
@@ -170,23 +132,22 @@ async def process_planned_count(message: Message, state: FSMContext):
             "Готово! Отмечай каждую сигарету кнопкой ниже:",
             reply_markup=get_main_keyboard()
         )
-    except:
-        await message.answer("Ошибка! Введи целое положительное число, например 5")
+    except Exception as e:
+        await message.answer(f"Ошибка: введи целое число, например 5")
 
 async def smoke_command(message: Message):
     user_id = message.from_user.id
-    data = await get_user_data(user_id)
+    data = get_user_data(user_id)
     if not data:
-        await message.answer("Настрой бота командой /start")
+        await message.answer("Сначала настрой бота командой /start")
         return
 
     now = datetime.now()
     bed_time = data["bed_time"]
-    # Корректируем bed_time: если оно уже прошло, добавляем дни, пока не станет больше now
+    # Корректируем bed_time: если уже прошло, добавляем дни
     while bed_time <= now:
         bed_time += timedelta(days=1)
 
-    # Проверка сна
     if now > bed_time:
         await message.answer("⏰ Время сна прошло! Завтра начни заново /start")
         return
@@ -195,7 +156,7 @@ async def smoke_command(message: Message):
     new_smoked = data["smoked_count"] + 1
     data["smoked_count"] = new_smoked
     data["last_update_time"] = now
-    await save_user_data(user_id, data)
+    save_user_data(user_id, data)  # обновляем в памяти
 
     remaining = data["planned_count"] - new_smoked
 
@@ -203,7 +164,6 @@ async def smoke_command(message: Message):
         total_seconds = (bed_time - now).total_seconds()
         interval_seconds = total_seconds / remaining
         next_time = now + timedelta(seconds=interval_seconds)
-        # Если по какой-то причине время всё ещё в прошлом, прибавляем 10 минут
         if next_time <= now:
             next_time = now + timedelta(minutes=10)
         await message.answer(
@@ -216,12 +176,11 @@ async def smoke_command(message: Message):
     else:
         over = abs(remaining)
         await message.answer(
-            f"⚠️ Превышение плана на {over} сигарет(ы)!\n"
-            f"Запланировано: {data['planned_count']}, выкурено: {new_smoked}"
+            f"⚠️ Превышение плана на {over} сигарет(ы)!"
         )
 
 async def stats_command(message: Message):
-    data = await get_user_data(message.from_user.id)
+    data = get_user_data(message.from_user.id)
     if not data:
         await message.answer("Нет данных. Начни с /start")
         return
@@ -234,10 +193,8 @@ async def stats_command(message: Message):
 
 # --- Запуск ---
 async def main():
-    await init_db()
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
-
     dp.message.register(start_command, Command("start"))
     dp.message.register(reset_command, Command("reset"))
     dp.message.register(process_first_cigarette, StateFilter(SmokingStates.waiting_for_first_cigarette))
@@ -245,7 +202,6 @@ async def main():
     dp.message.register(process_planned_count, StateFilter(SmokingStates.waiting_for_planned_count))
     dp.message.register(smoke_command, F.text == "🚬 Выкурила сигарету")
     dp.message.register(stats_command, F.text == "📊 Моя статистика")
-
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
