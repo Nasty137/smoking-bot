@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo  # Python 3.9+
 from typing import Dict, Optional
 
 from aiogram import Bot, Dispatcher, F
@@ -11,11 +12,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 
 BOT_TOKEN = "8713595114:AAHX5n1B-HAZFwg3lCkf-aQQDsU0WLpUmq4"
+TIMEZONE = "Europe/Moscow"  # Замените на ваш часовой пояс
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Хранилище в памяти (вместо SQLite) ---
+# --- Хранилище в памяти ---
 user_data_store: Dict[int, Dict] = {}
 
 def get_user_data(user_id: int) -> Optional[Dict]:
@@ -23,11 +25,15 @@ def get_user_data(user_id: int) -> Optional[Dict]:
 
 def save_user_data(user_id: int, data: Dict):
     user_data_store[user_id] = data
-    logger.info(f"Сохранено для {user_id}: {data}")
+    logger.info(f"Сохранено для {user_id}")
 
 def reset_user(user_id: int):
     if user_id in user_data_store:
         del user_data_store[user_id]
+
+def now_local():
+    """Возвращает текущее время в вашем часовом поясе"""
+    return datetime.now(ZoneInfo(TIMEZONE)).replace(tzinfo=None)
 
 # --- Клавиатура ---
 def get_main_keyboard():
@@ -45,13 +51,11 @@ class SmokingStates(StatesGroup):
     waiting_for_bed_time = State()
     waiting_for_planned_count = State()
 
-# --- Команда /reset ---
 async def reset_command(message: Message, state: FSMContext):
     reset_user(message.from_user.id)
     await state.clear()
-    await message.answer("✅ Все твои данные удалены. Можешь начать заново командой /start")
+    await message.answer("✅ Все данные удалены. Начни с /start")
 
-# --- Команда /start ---
 async def start_command(message: Message, state: FSMContext):
     reset_user(message.from_user.id)
     await state.clear()
@@ -66,11 +70,11 @@ async def process_first_cigarette(message: Message, state: FSMContext):
     try:
         time_str = message.text.strip()
         first_time = datetime.strptime(time_str, "%H:%M").time()
-        now = datetime.now()
+        now = now_local()
         first_datetime = datetime.combine(now.date(), first_time)
         await state.update_data(first_cigarette_time=first_datetime)
         await message.answer(
-            "Во сколько ты планируешь лечь спать?\n"
+            "Во сколько планируешь лечь спать?\n"
             "(Напиши в формате ЧЧ:ММ, например 23:00 или 02:00)"
         )
         await state.set_state(SmokingStates.waiting_for_bed_time)
@@ -86,8 +90,7 @@ async def process_bed_time(message: Message, state: FSMContext):
         if not first_datetime:
             await message.answer("Сначала укажи время первой сигареты. /start")
             return
-        now = datetime.now()
-        # Если время сна меньше времени первой сигареты — сон на следующий день
+        now = now_local()
         if bed_time_tm < first_datetime.time():
             bed_datetime = datetime.combine(now.date() + timedelta(days=1), bed_time_tm)
         else:
@@ -106,7 +109,6 @@ async def process_planned_count(message: Message, state: FSMContext):
         user_data = await state.get_data()
         first_time = user_data["first_cigarette_time"]
         bed_time = user_data["bed_time"]
-        # Сохраняем в память
         save_user_data(message.from_user.id, {
             "first_cigarette_time": first_time,
             "bed_time": bed_time,
@@ -119,21 +121,21 @@ async def process_planned_count(message: Message, state: FSMContext):
             interval = (bed_time - first_time) / remaining
             next_time = first_time + interval
             await message.answer(
-                f"📋 Твой план на сегодня:\n"
-                f"🎯 Всего: {planned} сигарет\n"
+                f"📋 Твой план:\n"
+                f"🎯 Всего: {planned}\n"
                 f"✅ Выкурено: 1 (первая учтена)\n"
                 f"🚬 Осталось: {remaining}\n\n"
-                f"⏰ Следующая сигарета: {next_time.strftime('%H:%M')}"
+                f"⏰ Следующая: {next_time.strftime('%H:%M')}"
             )
         else:
             await message.answer("Поздравляю! План выполнен! 🎉")
         await state.clear()
         await message.answer(
-            "Готово! Отмечай каждую сигарету кнопкой ниже:",
+            "Готово! Отмечай сигареты кнопкой ниже:",
             reply_markup=get_main_keyboard()
         )
-    except Exception as e:
-        await message.answer(f"Ошибка: введи целое число, например 5")
+    except:
+        await message.answer("Ошибка! Введи целое число, например 5")
 
 async def smoke_command(message: Message):
     user_id = message.from_user.id
@@ -142,21 +144,20 @@ async def smoke_command(message: Message):
         await message.answer("Сначала настрой бота командой /start")
         return
 
-    now = datetime.now()
+    now = now_local()
     bed_time = data["bed_time"]
-    # Корректируем bed_time: если уже прошло, добавляем дни
+
     while bed_time <= now:
         bed_time += timedelta(days=1)
 
     if now > bed_time:
-        await message.answer("⏰ Время сна прошло! Завтра начни заново /start")
+        await message.answer("⏰ Время сна прошло! Завтра начни /start")
         return
 
-    # Обновляем счётчик
     new_smoked = data["smoked_count"] + 1
     data["smoked_count"] = new_smoked
     data["last_update_time"] = now
-    save_user_data(user_id, data)  # обновляем в памяти
+    save_user_data(user_id, data)
 
     remaining = data["planned_count"] - new_smoked
 
@@ -169,15 +170,12 @@ async def smoke_command(message: Message):
         await message.answer(
             f"✅ Отмечено! Выкурено: {new_smoked} из {data['planned_count']}\n"
             f"🚬 Осталось: {remaining}\n\n"
-            f"⏰ Следующая сигарета: {next_time.strftime('%H:%M')}"
+            f"⏰ Следующая: {next_time.strftime('%H:%M')}"
         )
     elif remaining == 0:
         await message.answer(f"🎉 Поздравляю! Дневной план выполнен!")
     else:
-        over = abs(remaining)
-        await message.answer(
-            f"⚠️ Превышение плана на {over} сигарет(ы)!"
-        )
+        await message.answer(f"⚠️ Превышение плана на {abs(remaining)} сигарет(ы)!")
 
 async def stats_command(message: Message):
     data = get_user_data(message.from_user.id)
@@ -186,7 +184,7 @@ async def stats_command(message: Message):
         return
     await message.answer(
         f"📊 Статистика:\n"
-        f"🎯 План: {data['planned_count']} сигарет\n"
+        f"🎯 План: {data['planned_count']}\n"
         f"✅ Выкурено: {data['smoked_count']}\n"
         f"🚬 Осталось: {data['planned_count'] - data['smoked_count']}"
     )
