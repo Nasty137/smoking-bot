@@ -39,7 +39,7 @@ def now_local():
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🚬 Выкурила сигарету")],
+            [KeyboardButton(text="🚬 Выкурили сигарету")],
             [KeyboardButton(text="📊 Моя статистика")]
         ],
         resize_keyboard=True
@@ -61,8 +61,8 @@ async def start_command(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "Привет! Я бот для контроля курения. 🚭\n\n"
-        "Во сколько ты выкурила ПЕРВУЮ сигарету сегодня?\n"
-        "(Напиши в формате ЧЧ:ММ, например 08:30)"
+        "Во сколько Вы выкурили ПЕРВУЮ сигарету сегодня?\n"
+        "(Напишите в формате ЧЧ:ММ, например 08:30)"
     )
     await state.set_state(SmokingStates.waiting_for_first_cigarette)
 
@@ -74,12 +74,12 @@ async def process_first_cigarette(message: Message, state: FSMContext):
         first_datetime = datetime.combine(now.date(), first_time)
         await state.update_data(first_cigarette_time=first_datetime)
         await message.answer(
-            "Во сколько планируешь лечь спать?\n"
-            "(Напиши в формате ЧЧ:ММ, например 23:00 или 02:00)"
+            "Во сколько планируете лечь спать?\n"
+            "(Напишите в формате ЧЧ:ММ, например 23:00 или 02:00)"
         )
         await state.set_state(SmokingStates.waiting_for_bed_time)
     except:
-        await message.answer("Ошибка! Используй формат ЧЧ:ММ, например 08:30")
+        await message.answer("Ошибка! Используйте формат ЧЧ:ММ, например 08:30")
 
 async def process_bed_time(message: Message, state: FSMContext):
     try:
@@ -88,7 +88,7 @@ async def process_bed_time(message: Message, state: FSMContext):
         user_data = await state.get_data()
         first_datetime = user_data.get("first_cigarette_time")
         if not first_datetime:
-            await message.answer("Сначала укажи время первой сигареты. /start")
+            await message.answer("Сначала укажите время первой сигареты. /start")
             return
         now = now_local()
         if bed_time_tm < first_datetime.time():
@@ -96,10 +96,10 @@ async def process_bed_time(message: Message, state: FSMContext):
         else:
             bed_datetime = datetime.combine(now.date(), bed_time_tm)
         await state.update_data(bed_time=bed_datetime)
-        await message.answer("Сколько сигарет планируешь выкурить? (Введи число)")
+        await message.answer("Сколько сигарет планируете выкурить? (Введите число)")
         await state.set_state(SmokingStates.waiting_for_planned_count)
     except:
-        await message.answer("Ошибка! Используй формат ЧЧ:ММ, например 23:00")
+        await message.answer("Ошибка! Используйте формат ЧЧ:ММ, например 23:00")
 
 async def process_planned_count(message: Message, state: FSMContext):
     try:
@@ -131,17 +131,17 @@ async def process_planned_count(message: Message, state: FSMContext):
             await message.answer("Поздравляю! План выполнен! 🎉")
         await state.clear()
         await message.answer(
-            "Готово! Отмечай сигареты кнопкой ниже:",
+            "Готово! Отмечайте сигареты кнопкой ниже:",
             reply_markup=get_main_keyboard()
         )
     except:
-        await message.answer("Ошибка! Введи целое число, например 5")
+        await message.answer("Ошибка! Введите целое число, например 5")
 
 async def smoke_command(message: Message):
     user_id = message.from_user.id
     data = get_user_data(user_id)
     if not data:
-        await message.answer("Сначала настрой бота командой /start")
+        await message.answer("Сначала настройте бота командой /start")
         return
 
     now = now_local()
@@ -151,7 +151,7 @@ async def smoke_command(message: Message):
         bed_time += timedelta(days=1)
 
     if now > bed_time:
-        await message.answer("⏰ Время сна прошло! Завтра начни /start")
+        await message.answer("⏰ Время сна прошло! Завтра начните /start")
         return
 
     new_smoked = data["smoked_count"] + 1
@@ -180,7 +180,7 @@ async def smoke_command(message: Message):
 async def stats_command(message: Message):
     data = get_user_data(message.from_user.id)
     if not data:
-        await message.answer("Нет данных. Начни с /start")
+        await message.answer("Нет данных. Начните с /start")
         return
     await message.answer(
         f"📊 Статистика:\n"
@@ -198,7 +198,7 @@ async def main():
     dp.message.register(process_first_cigarette, StateFilter(SmokingStates.waiting_for_first_cigarette))
     dp.message.register(process_bed_time, StateFilter(SmokingStates.waiting_for_bed_time))
     dp.message.register(process_planned_count, StateFilter(SmokingStates.waiting_for_planned_count))
-    dp.message.register(smoke_command, F.text == "🚬 Выкурила сигарету")
+    dp.message.register(smoke_command, F.text == "🚬 Выкурили сигарету")
     dp.message.register(stats_command, F.text == "📊 Моя статистика")
     await dp.start_polling(bot)
 
